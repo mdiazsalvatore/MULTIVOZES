@@ -1,0 +1,51 @@
+name: Gerar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Compilar
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Publicar APK em Releases
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk MultiVozes.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest MultiVozes.apk \
+            --title "MultiVozes - versão ${{ github.run_number }}" \
+            --notes "Baixe o arquivo MultiVozes.apk abaixo no celular e instale." \
+            --latest
+
+      - name: Guardar registro da compilação
+        if: always()
+        run: |
+          echo "status=${{ job.status }} run=${{ github.run_number }} sha=${{ github.sha }}" > log.txt
+          if [ -f build.log ]; then grep -E "^e: |error:|FAILURE|What went wrong|BUILD" -A 3 build.log | head -c 60000 >> log.txt; echo "----- fim -----" >> log.txt; tail -c 60000 build.log >> log.txt; fi
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout --orphan ci-log
+          git rm -rf --cached . > /dev/null
+          git add log.txt
+          git commit -m "registro ${{ github.run_number }}"
+          git push -f origin ci-log

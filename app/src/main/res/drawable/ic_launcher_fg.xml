@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quatro faixas lado a lado, cada uma com uma nota: as vozes da harmonia -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#262D35" android:pathData="M30,32h10v44h-10z" />
+    <path android:fillColor="#262D35" android:pathData="M43,32h10v44h-10z" />
+    <path android:fillColor="#262D35" android:pathData="M56,32h10v44h-10z" />
+    <path android:fillColor="#262D35" android:pathData="M69,32h10v44h-10z" />
+    <path android:fillColor="#F2B544" android:pathData="M35,66m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+    <path android:fillColor="#F2B544" android:pathData="M48,58m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+    <path android:fillColor="#F2B544" android:pathData="M61,50m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+    <path android:fillColor="#E5484D" android:pathData="M74,42m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0" />
+</vector>
