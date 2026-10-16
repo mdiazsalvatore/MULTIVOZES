@@ -19,6 +19,8 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:text="@string/app_name"
             android:textColor="@color/ink"
             android:textSize="20sp"
@@ -30,6 +32,13 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Calibrar" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnFx"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Efeitos" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSettings"

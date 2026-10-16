@@ -30,9 +30,33 @@ class Clicks(sampleRate: Int) {
  * O que toca no fone durante uma gravação:
  * contagem antes de começar, as vozes já gravadas e (opcional) o metrônomo.
  */
+/** Conteúdo musical (as vozes) tocado a partir do início da música. */
+interface ContentSource {
+    val length: Int
+    /** Escreve [n] quadros a partir do quadro [from] da música em dst[offset...]. */
+    fun read(from: Int, dst: FloatArray, offset: Int, n: Int)
+}
+
+/** Mixagem já pronta, em memória. */
+class ShortContent(private val data: ShortArray) : ContentSource {
+    override val length get() = data.size
+    override fun read(from: Int, dst: FloatArray, offset: Int, n: Int) {
+        for (i in 0 until n) dst[offset + i] = data[from + i] / 32768f
+    }
+}
+
+/** Mixagem calculada na hora: mexer nos efeitos muda o som imediatamente. */
+class LiveMixContent(private val engine: MixEngine) : ContentSource {
+    override val length get() = engine.length
+    override fun read(from: Int, dst: FloatArray, offset: Int, n: Int) {
+        if (engine.position != from) engine.seek(from)
+        engine.render(dst, n, offset)
+    }
+}
+
 class SessionSource(
     private val sampleRate: Int,
-    private val mix: ShortArray?,
+    private val content: ContentSource?,
     private val contentStart: Int,
     bpm: Int,
     private val countInBeats: Int,
@@ -43,14 +67,20 @@ class SessionSource(
     private val spb = sampleRate * 60.0 / bpm
     private val firstClick = contentStart - countInBeats * spb
 
+    private var tmp = FloatArray(0)
+
     override fun fill(startFrame: Long, out: ShortArray, n: Int) {
+        if (tmp.size < n) tmp = FloatArray(n)
+        java.util.Arrays.fill(tmp, 0, n, 0f)
+        val c = content
+        if (c != null) {
+            val a = max(startFrame, contentStart.toLong())
+            val b = minOf(startFrame + n, contentStart.toLong() + c.length)
+            if (b > a) c.read((a - contentStart).toInt(), tmp, (a - startFrame).toInt(), (b - a).toInt())
+        }
         for (i in 0 until n) {
             val f = startFrame + i
-            var v = 0f
-            if (mix != null) {
-                val j = f - contentStart
-                if (j >= 0 && j < mix.size) v += mix[j.toInt()] / 32768f
-            }
+            var v = tmp[i]
             val rel = f - firstClick
             if (rel >= 0) {
                 val beat = floor(rel / spb).toLong()

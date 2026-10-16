@@ -54,6 +54,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnNew: MaterialButton
     private lateinit var btnCalib: MaterialButton
     private lateinit var btnSettings: MaterialButton
+    private lateinit var btnFx: MaterialButton
+    private var fxPlayButton: MaterialButton? = null
     private lateinit var cameraParking: FrameLayout
 
     private val main = Handler(Looper.getMainLooper())
@@ -108,6 +110,7 @@ class MainActivity : AppCompatActivity() {
         btnNew = findViewById(R.id.btnNew)
         btnCalib = findViewById(R.id.btnCalib)
         btnSettings = findViewById(R.id.btnSettings)
+        btnFx = findViewById(R.id.btnFx)
         cameraParking = findViewById(R.id.cameraParking)
 
         project = Project(File(filesDir, "projeto"))
@@ -132,6 +135,7 @@ class MainActivity : AppCompatActivity() {
         btnNew.setOnClickListener { confirmNewProject() }
         btnCalib.setOnClickListener { showCalibrationIntro() }
         btnSettings.setOnClickListener { showSettings() }
+        btnFx.setOnClickListener { showEffects() }
 
         selected = firstEmptyOr(0)
         buildStage()
@@ -392,11 +396,9 @@ class MainActivity : AppCompatActivity() {
         val others = (0 until project.voiceCount).filter { it != target && project.tracks[it] != null }
         val length = project.masterLength
         Thread {
+            // As vozes anteriores tocam no fone já com os efeitos escolhidos.
             val mix = if (others.isEmpty()) null else try {
-                Mixer.mix(others.map { i ->
-                    val t = project.tracks[i]!!
-                    Mixer.Part(Wav.read(File(project.dir, t.audioFile)).first, t.volume, t.nudgeMs * sr / 1000)
-                }, length)
+                project.mixEngine(others, length).renderAll()
             } catch (e: Exception) { null }
             main.post { beginRecording(target, mix) }
         }.start()
@@ -406,7 +408,7 @@ class MainActivity : AppCompatActivity() {
         val sr = project.sampleRate
         val beats = if (project.countInOn) project.countInBeats else 0
         val c = SessionSource.contentStartFor(sr, project.bpm, beats)
-        val source = SessionSource(sr, mix, c, project.bpm, beats, project.clickDuring)
+        val source = SessionSource(sr, mix?.let { ShortContent(it) }, c, project.bpm, beats, project.clickDuring)
         val stopAt = if (mix != null) (c + mix.size + sr * 3 / 2).toLong() else 0L
 
         mode = Mode.RECORDING
@@ -525,7 +527,7 @@ class MainActivity : AppCompatActivity() {
             project.tracks[target] = Track(
                 audio.name, videoName, offsetMs, savedLength,
                 nudgeMs = 0, volume = old?.volume ?: 1f
-            )
+            ).also { t -> old?.let { t.fx.copyFrom(it.fx) } }
             project.save()
             armed = -1
             selected = firstEmptyOr(target)
@@ -546,17 +548,13 @@ class MainActivity : AppCompatActivity() {
         updateButtons(); refreshTiles()
         status("Preparando…")
         val sr = project.sampleRate
-        val length = project.masterLength
         Thread {
-            val mix = Mixer.mix((0 until project.voiceCount).mapNotNull { i ->
-                val t = project.tracks[i] ?: return@mapNotNull null
-                Mixer.Part(Wav.read(File(project.dir, t.audioFile)).first, t.volume, t.nudgeMs * sr / 1000)
-            }, length)
+            val mixer = project.mixEngine(project.visibleRecorded())
             main.post {
                 if (mode != Mode.PLAYING) return@post
                 val c = sr / 2
-                val e = DuplexEngine(this, sr, SessionSource(sr, mix, c, project.bpm, 0, false), c,
-                    record = false, stopAtPlaybackFrame = (c + mix.size + sr / 2).toLong(),
+                val e = DuplexEngine(this, sr, SessionSource(sr, LiveMixContent(mixer), c, project.bpm, 0, false), c,
+                    record = false, stopAtPlaybackFrame = (c + mixer.length + sr / 2).toLong(),
                     listener = object : DuplexEngine.Listener {
                         override fun onContentStart(t0Nanos: Long) {
                             recT0 = t0Nanos
@@ -875,6 +873,122 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    // ---------------------------------------------------------------- efeitos
+
+    private fun showEffects() {
+        if (mode != Mode.IDLE) return
+        val recorded = project.visibleRecorded()
+        if (recorded.isEmpty()) { status("Grave uma voz para usar os efeitos."); return }
+        val root = column()
+        root.addView(label("Voz ou sala:").apply { setPadding(0, dp(4), 0, dp(4)) })
+        val tabs = toggle(recorded.map { "${it + 1}" } + "Sala", 0)
+        root.addView(tabs.first)
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(panel)
+        val play = MaterialButton(this)
+        play.setOnClickListener { if (mode == Mode.PLAYING) stopPlaying() else startPlaying() }
+        root.addView(play, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
+        root.addView(label("Pode mexer enquanto ouve: o som muda na hora.").apply { alpha = 0.7f; setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) })
+        fxPlayButton = play
+        updateButtons()
+
+        fun show(tab: Int) {
+            panel.removeAllViews()
+            if (tab < recorded.size) voicePanel(panel, recorded[tab], recorded) else roomPanel(panel)
+        }
+        (tabs.first as MaterialButtonToggleGroup).addOnButtonCheckedListener { _, _, isChecked ->
+            if (isChecked) show(tabs.second())
+        }
+        show(0)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Efeitos")
+            .setView(android.widget.ScrollView(this).apply { addView(root) })
+            .setPositiveButton("Fechar", null)
+            .setOnDismissListener {
+                fxPlayButton = null
+                if (mode == Mode.PLAYING) stopPlaying()
+                project.save()
+                refreshTiles(); updateButtons()
+            }
+            .show()
+    }
+
+    private fun voicePanel(panel: LinearLayout, i: Int, all: List<Int>) {
+        val t = project.tracks[i] ?: return
+        val fx = t.fx
+        panel.addView(label("Voz ${i + 1}").apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f); setPadding(0, dp(14), 0, 0) })
+        addSlider(panel, 0f, 150f, 5f, t.volume * 100, { "Volume: ${it.roundToInt()}%" }) { t.volume = it / 100f }
+        addSlider(panel, 0f, 100f, 1f, fx.reverb * 100, { "Reverb: ${it.roundToInt()}%" }) { fx.reverb = it / 100f }
+        addSlider(panel, -12f, 12f, 0.5f, fx.bassDb, { "Graves: ${dbText(it)}" }) { fx.bassDb = it }
+        addSlider(panel, -12f, 12f, 0.5f, fx.trebleDb, { "Agudos: ${dbText(it)}" }) { fx.trebleDb = it }
+        addSlider(panel, 0f, 100f, 1f, fx.echo * 100, { "Eco: ${it.roundToInt()}%" }) { fx.echo = it / 100f }
+        val echoTime = addSlider(panel, 60f, 900f, 10f, fx.echoMs.toFloat(), { "Tempo do eco: ${it.roundToInt()} ms" }) { fx.echoMs = it.roundToInt() }
+        addSlider(panel, 0f, 80f, 1f, fx.echoFeedback * 100, { "Repetições do eco: ${it.roundToInt()}%" }) { fx.echoFeedback = it / 100f }
+
+        val beatMs = (60000 / project.bpm).coerceIn(60, 900)
+        val sync = MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+            text = "Eco no tempo da música (1 tempo = $beatMs ms)"
+            isAllCaps = false
+            setOnClickListener { echoTime.value = snap(beatMs.toFloat(), 60f, 900f, 10f) }
+        }
+        panel.addView(sync)
+        if (all.size > 1) {
+            panel.addView(MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                text = "Usar estes efeitos em todas as vozes"
+                isAllCaps = false
+                setOnClickListener {
+                    for (j in all) if (j != i) project.tracks[j]?.fx?.copyFrom(fx)
+                    status("Efeitos da Voz ${i + 1} copiados para as outras.")
+                }
+            })
+        }
+    }
+
+    private fun roomPanel(panel: LinearLayout) {
+        val room = project.room
+        panel.addView(label("Sala do reverb").apply { setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f); setPadding(0, dp(14), 0, 0) })
+        panel.addView(label("Todas as vozes usam a mesma sala, como se tocassem no mesmo lugar. A quantidade de reverb de cada voz fica na aba dela.").apply { alpha = 0.7f; setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f) })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((key, name) in listOf("sala" to "Sala", "igreja" to "Igreja", "catedral" to "Catedral")) {
+            row.addView(MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                text = name
+                isAllCaps = false
+                setOnClickListener {
+                    room.preset(key)
+                    panel.removeAllViews()
+                    roomPanel(panel)
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(4) })
+        }
+        panel.addView(row)
+        addSlider(panel, 0f, 100f, 1f, room.size * 100, { "Tamanho: ${it.roundToInt()}%" }) { room.size = it / 100f }
+        addSlider(panel, 0f, 100f, 1f, room.brightness * 100, { "Brilho: ${it.roundToInt()}%" }) { room.brightness = it / 100f }
+        addSlider(panel, 0f, 120f, 5f, room.preDelayMs.toFloat(), { "Pré-atraso: ${it.roundToInt()} ms" }) { room.preDelayMs = it.roundToInt() }
+    }
+
+    private fun dbText(v: Float) = if (kotlin.math.abs(v) < 0.05f) "0 dB" else "%+.1f dB".format(v)
+
+    private fun snap(v: Float, from: Float, to: Float, step: Float): Float {
+        val k = ((v.coerceIn(from, to) - from) / step).roundToInt()
+        return (from + k * step).coerceIn(from, to)
+    }
+
+    private fun addSlider(
+        parent: LinearLayout, from: Float, to: Float, step: Float, value: Float,
+        text: (Float) -> String, onChange: (Float) -> Unit
+    ): Slider {
+        val v0 = snap(value, from, to, step)
+        val l = label(text(v0))
+        val s = Slider(this).apply {
+            valueFrom = from; valueTo = to; stepSize = step; this.value = v0
+        }
+        s.addOnChangeListener { _, v, _ -> l.text = text(v); onChange(v) }
+        parent.addView(l)
+        parent.addView(s)
+        return s
+    }
+
     // pequenos construtores de interface
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -927,6 +1041,11 @@ class MainActivity : AppCompatActivity() {
         btnNew.isEnabled = idle
         btnCalib.isEnabled = idle
         btnSettings.isEnabled = idle
+        btnFx.isEnabled = idle && project.recordedCount() > 0
+        fxPlayButton?.let {
+            it.isEnabled = idle || mode == Mode.PLAYING
+            it.text = if (mode == Mode.PLAYING) "■  Parar" else "▶  Ouvir com efeitos"
+        }
     }
 
     private fun status(text: String) { txtStatus.text = text }

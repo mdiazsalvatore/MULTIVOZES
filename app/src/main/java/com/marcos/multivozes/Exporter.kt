@@ -54,14 +54,8 @@ class Exporter(private val context: Context, private val project: Project) {
 
         Thread {
             try {
-                val length = project.masterLength
                 val sr = project.sampleRate
-                val parts = (0 until project.voiceCount).mapNotNull { i ->
-                    val t = project.tracks[i] ?: return@mapNotNull null
-                    val (s, _) = Wav.read(File(project.dir, t.audioFile))
-                    Mixer.Part(s, t.volume, t.nudgeMs * sr / 1000)
-                }
-                val mix = Mixer.mix(parts, length)
+                val mix = project.mixEngine(project.visibleRecorded()).renderAll()
                 val mixFile = File(context.cacheDir, "mix.wav")
                 Wav.write(mixFile, mix, mix.size, sr)
                 main.post { if (!cancelled) build(voices, mixFile, listener) }
