@@ -10,12 +10,11 @@ import android.provider.MediaStore
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.OverlaySettings
-import androidx.media3.common.VideoCompositorSettings
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
-import androidx.media3.effect.StaticOverlaySettings
+import androidx.media3.effect.OverlaySettings
+import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
@@ -111,12 +110,12 @@ class Exporter(private val context: Context, private val project: Project) {
             override fun getOutputSize(inputSizes: List<Size>): Size = Size(outW, outH)
 
             override fun getOverlaySettings(inputId: Int, presentationTimeUs: Long): OverlaySettings {
-                val r = placement.getOrNull(inputId) ?: return StaticOverlaySettings.Builder().build()
+                val r = placement.getOrNull(inputId) ?: return OverlaySettings.Builder().build()
                 // Âncoras em coordenadas -1..1: canto superior esquerdo do quadro vai para
                 // o canto superior esquerdo do retângulo da voz.
                 val x = -1f + 2f * r[0] / outW
                 val y = 1f - 2f * r[1] / outH
-                return StaticOverlaySettings.Builder()
+                return OverlaySettings.Builder()
                     .setOverlayFrameAnchor(-1f, 1f)
                     .setBackgroundFrameAnchor(x, y)
                     .build()
