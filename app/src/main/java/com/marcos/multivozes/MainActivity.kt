@@ -39,7 +39,7 @@ import kotlin.math.roundToInt
 @OptIn(UnstableApi::class)
 class MainActivity : AppCompatActivity() {
 
-    private enum class Mode { IDLE, RECORDING, SAVING, PLAYING, CALIBRATING, EXPORTING }
+    private enum class Mode { IDLE, RECORDING, SAVING, PLAYING, CALIBRATING, EXPORTING, IMPORTING }
 
     private lateinit var project: Project
     private lateinit var calib: Calibration
@@ -55,6 +55,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCalib: MaterialButton
     private lateinit var btnSettings: MaterialButton
     private lateinit var btnFx: MaterialButton
+    private lateinit var btnImport: MaterialButton
+    private lateinit var voiceToggle: MaterialButtonToggleGroup
+    private var syncingToggle = false
+    private var importTarget = -1
     private var fxPlayButton: MaterialButton? = null
     private lateinit var cameraParking: FrameLayout
 
@@ -88,6 +92,12 @@ class MainActivity : AppCompatActivity() {
     private val tmpVideo get() = File(project.dir, "gravando.mp4")
     private val tmpAudio get() = File(project.dir, "gravando.wav")
 
+    private val pickVideo = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val target = importTarget
+        importTarget = -1
+        if (uri != null && target >= 0) importVideo(uri, target)
+    }
+
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
         if (res.values.all { it }) setupCamera()
         else status("O app precisa da câmera e do microfone. Libere nas configurações do Android.")
@@ -111,11 +121,13 @@ class MainActivity : AppCompatActivity() {
         btnCalib = findViewById(R.id.btnCalib)
         btnSettings = findViewById(R.id.btnSettings)
         btnFx = findViewById(R.id.btnFx)
+        btnImport = findViewById(R.id.btnImport)
+        voiceToggle = findViewById(R.id.voiceToggle)
         cameraParking = findViewById(R.id.cameraParking)
 
         project = Project(File(filesDir, "projeto"))
         project.load()
-        if (project.recordedCount() == 0) project.sampleRate = AudioRoute.nativeSampleRate(this)
+        if (!project.anyTrack()) project.sampleRate = AudioRoute.nativeSampleRate(this)
         calib = Calibration(this)
 
         stage = StageView(this)
@@ -136,6 +148,13 @@ class MainActivity : AppCompatActivity() {
         btnCalib.setOnClickListener { showCalibrationIntro() }
         btnSettings.setOnClickListener { showSettings() }
         btnFx.setOnClickListener { showEffects() }
+        btnImport.setOnClickListener { askImport(selected) }
+        syncVoiceToggle()
+        voiceToggle.addOnButtonCheckedListener { _, id, isChecked ->
+            if (!isChecked || syncingToggle) return@addOnButtonCheckedListener
+            val n = when (id) { R.id.v2 -> 2; R.id.v3 -> 3; else -> 4 }
+            setVoiceCount(n)
+        }
 
         selected = firstEmptyOr(0)
         buildStage()
@@ -208,13 +227,14 @@ class MainActivity : AppCompatActivity() {
                 if (tr != null) {
                     if (tr.volume != 1f) append(" · ${(tr.volume * 100).roundToInt()}%")
                     if (tr.nudgeMs != 0) append(" · ${if (tr.nudgeMs > 0) "+" else ""}${tr.nudgeMs} ms")
+                    if (tr.imported) append(" · importado")
                 }
             }
             t.setLabel(label)
             t.setHint(
                 when {
                     showsCamera -> null
-                    tr == null && i == selected -> "Toque no botão vermelho\npara gravar esta voz"
+                    tr == null && i == selected -> "Toque no botão vermelho para gravar\nou em Carregar vídeo"
                     tr == null -> "vazia"
                     tr.videoFile == null -> "só áudio"
                     else -> null
@@ -245,6 +265,15 @@ class MainActivity : AppCompatActivity() {
     private fun onTileTap(i: Int) {
         if (mode != Mode.IDLE) return
         if (i == selected && project.tracks[i] != null) { showTileMenu(i); return }
+        if (i == selected && project.tracks[i] == null) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Voz ${i + 1}")
+                .setItems(arrayOf("Gravar com a câmera", "Carregar vídeo do celular")) { _, which ->
+                    if (which == 0) onRecPressed() else askImport(i)
+                }
+                .show()
+            return
+        }
         selected = i
         if (armed != i) armed = -1
         refreshTiles()
@@ -774,12 +803,39 @@ class MainActivity : AppCompatActivity() {
         box.addView(nudgeLabel); box.addView(nudge)
         box.addView(label("Use o ajuste fino só se, ouvindo, esta voz parecer levemente fora do tempo. O vídeo acompanha o ajuste.").apply { alpha = 0.7f })
 
-        MaterialAlertDialogBuilder(this)
+        var trim: Slider? = null
+        if (tr.imported) {
+            val maxS = ((tr.lengthFrames / project.sampleRate.toFloat()) - 1f).coerceIn(0.1f, 60f)
+            val trimLabel = label("")
+            val sl = Slider(this).apply {
+                valueFrom = 0f; valueTo = (maxS * 10).roundToInt() / 10f; stepSize = 0.1f
+                value = snap(tr.trimMs / 1000f, 0f, valueTo, 0.1f)
+            }
+            fun updTrim() { trimLabel.text = "Começar o vídeo em: ${"%.1f".format(sl.value)} s" }
+            sl.addOnChangeListener { _, _, _ -> updTrim() }; updTrim()
+            box.addView(trimLabel); box.addView(sl)
+            box.addView(label(
+                "Pula a introdução ou o silêncio antes de a pessoa começar." +
+                    if (project.hasOthersVisible(i)) " Atenção: as vozes já gravadas acompanharam o início atual; mudar aqui as deixa fora do tempo." else ""
+            ).apply { alpha = 0.7f })
+            trim = sl
+        }
+        box.addView(MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = "Trocar por vídeo do celular"
+            isAllCaps = false
+            setOnClickListener {
+                currentTileDialog?.dismiss()
+                askImport(i)
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+
+        currentTileDialog = MaterialAlertDialogBuilder(this)
             .setTitle("Voz ${i + 1}")
-            .setView(box)
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("OK") { _, _ ->
                 tr.volume = vol.value / 100f
                 tr.nudgeMs = nudge.value.roundToInt()
+                trim?.let { tr.trimMs = (it.value * 1000).roundToInt() }
                 project.save()
                 rebuildPlayers(); refreshTiles()
             }
@@ -803,13 +859,11 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private var currentTileDialog: androidx.appcompat.app.AlertDialog? = null
+
     private fun showSettings() {
         if (mode != Mode.IDLE) return
         val box = column()
-
-        box.addView(label("Número de vozes"))
-        val voices = toggle(listOf("2", "3", "4"), project.voiceCount - 2)
-        box.addView(voices.first)
 
         box.addView(label("Formato do vídeo"))
         val fmt = toggle(listOf("Vertical (celular)", "Horizontal"), if (project.vertical) 0 else 1)
@@ -851,10 +905,8 @@ class MainActivity : AppCompatActivity() {
             .setView(scroll)
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("OK") { _, _ ->
-                val newCount = voices.second() + 2
                 val newVertical = fmt.second() == 0
-                val layoutChanged = newCount != project.voiceCount || newVertical != project.vertical
-                project.voiceCount = newCount
+                val layoutChanged = newVertical != project.vertical
                 project.vertical = newVertical
                 project.bpm = bpm.value.roundToInt()
                 project.countInOn = countSw.isChecked
@@ -871,6 +923,113 @@ class MainActivity : AppCompatActivity() {
                 updateButtons()
             }
             .show()
+    }
+
+    // ---------------------------------------------------------------- número de vozes
+
+    private fun syncVoiceToggle() {
+        syncingToggle = true
+        voiceToggle.check(when (project.voiceCount) { 2 -> R.id.v2; 3 -> R.id.v3; else -> R.id.v4 })
+        syncingToggle = false
+    }
+
+    private fun setVoiceCount(n: Int) {
+        if (mode != Mode.IDLE) { syncVoiceToggle(); return }
+        if (n == project.voiceCount) return
+        project.voiceCount = n
+        project.save()
+        armed = -1
+        if (selected >= n || project.tracks[selected] != null) selected = firstEmptyOr(selected.coerceAtMost(n - 1))
+        buildStage()
+        updateButtons()
+        val hidden = project.hiddenCount()
+        status(
+            "$n vozes." + if (hidden > 0)
+                " ${if (hidden == 1) "Uma voz gravada ficou guardada" else "$hidden vozes gravadas ficaram guardadas"} fora da tela; volte para 4 para vê-las."
+            else ""
+        )
+    }
+
+    // ---------------------------------------------------------------- carregar vídeo do celular
+
+    private fun askImport(target: Int) {
+        if (mode != Mode.IDLE) return
+        val go = {
+            importTarget = target
+            try {
+                pickVideo.launch(
+                    androidx.activity.result.PickVisualMediaRequest.Builder()
+                        .setMediaType(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                        .build()
+                )
+            } catch (e: Exception) {
+                importTarget = -1
+                status("Não foi possível abrir a galeria: ${e.message}")
+            }
+        }
+        if (project.tracks[target] != null) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Substituir a Voz ${target + 1}?")
+                .setMessage("O vídeo escolhido vai ocupar o lugar da gravação atual desta voz.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Escolher vídeo") { _, _ -> go() }
+                .show()
+        } else go()
+    }
+
+    private fun importVideo(uri: Uri, target: Int) {
+        if (mode != Mode.IDLE) return
+        mode = Mode.IMPORTING
+        recTarget = target
+        selected = target
+        armed = -1
+        releasePlayers()
+        updateButtons(); refreshTiles()
+        status("Carregando o vídeo na Voz ${target + 1}…")
+        val sr = project.sampleRate
+        val importer = VideoImport(this)
+        val tmpV = File(project.dir, "importando.mp4")
+        Thread {
+            try {
+                importer.copy(uri, tmpV)
+                val res = importer.decodeAudio(tmpV, sr) { pct ->
+                    main.post { if (mode == Mode.IMPORTING) { status("Lendo o som do vídeo… $pct%"); meter.progress = pct } }
+                }
+                val tmpA = File(project.dir, "importando.wav")
+                Wav.write(tmpA, res.audio, res.audio.size, sr)
+                main.post { finishImport(target, tmpV, tmpA, res) }
+            } catch (e: Exception) {
+                tmpV.delete()
+                val msg = if (e is VideoImport.ImportException) e.message ?: "Erro" else "Não consegui carregar este vídeo (${e.javaClass.simpleName}: ${e.message})."
+                main.post {
+                    mode = Mode.IDLE
+                    meter.progress = 0
+                    rebuildPlayers(); refreshTiles(); updateButtons()
+                    status("O vídeo não foi carregado.")
+                    MaterialAlertDialogBuilder(this).setTitle("Não deu certo").setMessage(msg).setPositiveButton("OK", null).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun finishImport(target: Int, tmpV: File, tmpA: File, res: VideoImport.Result) {
+        val old = project.tracks[target]
+        val audio = project.audioFile(target)
+        audio.delete(); tmpA.renameTo(audio)
+        val vf = project.videoFile(target)
+        vf.delete(); tmpV.renameTo(vf)
+        project.tracks[target] = Track(
+            audio.name, vf.name, -res.audioStartMs, res.audio.size,
+            nudgeMs = 0, volume = old?.volume ?: 1f, imported = true, trimMs = 0
+        ).also { t -> old?.let { t.fx.copyFrom(it.fx) } }
+        project.save()
+        mode = Mode.IDLE
+        meter.progress = 0
+        selected = firstEmptyOr(target)
+        rebuildPlayers(); refreshTiles(); updateButtons()
+        val secs = res.audio.size / project.sampleRate
+        status("Vídeo carregado na Voz ${target + 1} (${secs / 60}:${"%02d".format(secs % 60)}). " +
+            "Toque duas vezes nele para pular a introdução. Depois grave a sua voz com fone.")
     }
 
     // ---------------------------------------------------------------- efeitos
@@ -1042,6 +1201,8 @@ class MainActivity : AppCompatActivity() {
         btnCalib.isEnabled = idle
         btnSettings.isEnabled = idle
         btnFx.isEnabled = idle && project.recordedCount() > 0
+        btnImport.isEnabled = idle
+        for (k in 0 until voiceToggle.childCount) voiceToggle.getChildAt(k).isEnabled = idle
         fxPlayButton?.let {
             it.isEnabled = idle || mode == Mode.PLAYING
             it.text = if (mode == Mode.PLAYING) "■  Parar" else "▶  Ouvir com efeitos"
@@ -1078,7 +1239,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 Mode.CALIBRATING -> meter.progress = ((calibration?.level ?: 0f) * 100).roundToInt()
-                Mode.EXPORTING -> {}
+                Mode.EXPORTING, Mode.IMPORTING -> {}
                 else -> meter.progress = 0
             }
             main.postDelayed(this, 100)

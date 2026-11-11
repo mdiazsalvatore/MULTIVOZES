@@ -12,9 +12,16 @@ class Track(
     var videoOffsetMs: Double,
     var lengthFrames: Int,
     var nudgeMs: Int = 0,
-    @Volatile var volume: Float = 1f
+    @Volatile var volume: Float = 1f,
+    /** Veio de um vídeo do celular (o som e a imagem já estão sincronizados no arquivo). */
+    var imported: Boolean = false,
+    /** Quanto pular do começo do vídeo importado (ms). */
+    var trimMs: Int = 0
 ) {
     val fx = VoiceFx()
+
+    fun trimFrames(sampleRate: Int) = (trimMs.toLong() * sampleRate / 1000).toInt()
+    fun effectiveLength(sampleRate: Int) = (lengthFrames - trimFrames(sampleRate)).coerceAtLeast(0)
 
     fun toJson() = JSONObject().apply {
         put("audio", audioFile)
@@ -23,6 +30,8 @@ class Track(
         put("length", lengthFrames)
         put("nudgeMs", nudgeMs)
         put("volume", volume.toDouble())
+        put("imported", imported)
+        put("trimMs", trimMs)
         put("fx", JSONObject().apply {
             put("reverb", fx.reverb.toDouble())
             put("bass", fx.bassDb.toDouble())
@@ -40,7 +49,9 @@ class Track(
             o.getDouble("videoOffsetMs"),
             o.getInt("length"),
             o.optInt("nudgeMs", 0),
-            o.optDouble("volume", 1.0).toFloat()
+            o.optDouble("volume", 1.0).toFloat(),
+            o.optBoolean("imported", false),
+            o.optInt("trimMs", 0)
         ).also { t ->
             o.optJSONObject("fx")?.let { f ->
                 t.fx.reverb = f.optDouble("reverb", 0.0).toFloat()
@@ -70,8 +81,13 @@ class Project(val dir: File) {
 
     private val file get() = File(dir, "projeto.json")
 
-    val masterLength: Int get() = tracks.filterNotNull().maxOfOrNull { it.lengthFrames } ?: 0
-    fun recordedCount() = tracks.count { it != null }
+    /** Duração da música: a voz mais longa entre as que aparecem na tela. */
+    val masterLength: Int get() = (0 until voiceCount).mapNotNull { tracks[it] }
+        .maxOfOrNull { it.effectiveLength(sampleRate) } ?: 0
+    /** Vozes gravadas que aparecem na tela (com 2 vozes, a 3 e a 4 ficam guardadas). */
+    fun recordedCount() = (0 until voiceCount).count { tracks[it] != null }
+    fun anyTrack() = tracks.any { it != null }
+    fun hiddenCount() = (voiceCount until 4).count { tracks[it] != null }
     fun hasOthers(except: Int) = tracks.indices.any { it != except && tracks[it] != null }
 
     fun audioFile(i: Int) = File(dir, "voz${i + 1}.wav")
@@ -147,7 +163,8 @@ class Project(val dir: File) {
 
     /** Onde começar a cortar o vídeo para que o instante 0 coincida com o início da música. */
     fun clipStartMs(t: Track): Long {
-        val v = -t.videoOffsetMs - t.nudgeMs - videoDelayMs
+        // O ajuste de sincronia imagem × som só vale para a câmera deste celular.
+        val v = -t.videoOffsetMs - t.nudgeMs - (if (t.imported) 0 else videoDelayMs) + t.trimMs
         return maxOf(0.0, v).toLong()
     }
 
@@ -162,7 +179,7 @@ class Project(val dir: File) {
         val parts = indices.mapNotNull { i ->
             val t = tracks[i] ?: return@mapNotNull null
             val samples = try { Wav.read(File(dir, t.audioFile)).first } catch (_: Exception) { return@mapNotNull null }
-            MixEngine.Part(samples, { t.volume }, { t.nudgeMs * sr / 1000 }, t.fx)
+            MixEngine.Part(samples, { t.volume }, { (t.nudgeMs * sr / 1000) - t.trimFrames(sr) }, t.fx)
         }
         return MixEngine(sr, parts, room, length)
     }
