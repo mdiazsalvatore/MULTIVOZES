@@ -886,6 +886,9 @@ class MainActivity : AppCompatActivity() {
         val clickSw = switch("Metrônomo durante a gravação", project.clickDuring)
         box.addView(clickSw)
 
+        val wmSw = switch("Marca d'água MultiVozes no vídeo", project.watermark)
+        box.addView(wmSw)
+
         box.addView(label("Câmera"))
         val cam = toggle(listOf("Frontal", "Traseira"), if (project.useFrontCamera) 0 else 1)
         box.addView(cam.first)
@@ -916,6 +919,7 @@ class MainActivity : AppCompatActivity() {
                 val vdChanged = newVd != project.videoDelayMs
                 project.videoDelayMs = newVd
                 project.useFrontCamera = cam.second() == 0
+                project.watermark = wmSw.isChecked
                 project.save()
                 camera.switchCamera(project.useFrontCamera)
                 if (selected >= project.voiceCount) selected = firstEmptyOr(0)

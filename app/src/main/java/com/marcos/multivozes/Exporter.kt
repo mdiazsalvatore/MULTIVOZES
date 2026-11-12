@@ -13,6 +13,8 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.VideoCompositorSettings
 import androidx.media3.transformer.Composition
@@ -116,9 +118,14 @@ class Exporter(private val context: Context, private val project: Project) {
             }
         }
 
-        val composition = Composition.Builder(sequences)
+        val builder = Composition.Builder(sequences)
             .setVideoCompositorSettings(compositor)
-            .build()
+        if (project.watermark) {
+            // Aplicada depois da montagem, sobre o vídeo inteiro: fica sempre no canto inferior direito.
+            val mark = BitmapOverlay.createStaticBitmapOverlay(Watermark.create(context, outW, outH))
+            builder.setEffects(Effects(listOf(), listOf(OverlayEffect(listOf(mark)))))
+        }
+        val composition = builder.build()
 
         val out = File(context.cacheDir, "multivozes.mp4")
         out.delete()

@@ -75,6 +75,8 @@ class Project(val dir: File) {
     /** Atraso do vídeo em relação ao som, ajuste global (ms). */
     var videoDelayMs = 0
     var useFrontCamera = true
+    /** Logo + "MultiVozes" no canto do vídeo exportado. */
+    var watermark = true
     var sampleRate = 48000
     val tracks = arrayOfNulls<Track>(4)
     val room = RoomFx().apply { preset("igreja") }
@@ -106,6 +108,7 @@ class Project(val dir: File) {
             clickDuring = o.optBoolean("clickDuring", false)
             videoDelayMs = o.optInt("videoDelayMs", 0)
             useFrontCamera = o.optBoolean("front", true)
+            watermark = o.optBoolean("watermark", true)
             sampleRate = o.optInt("sampleRate", 48000)
             o.optJSONObject("room")?.let { r ->
                 room.size = r.optDouble("size", room.size.toDouble()).toFloat()
@@ -132,6 +135,7 @@ class Project(val dir: File) {
             put("clickDuring", clickDuring)
             put("videoDelayMs", videoDelayMs)
             put("front", useFrontCamera)
+            put("watermark", watermark)
             put("sampleRate", sampleRate)
             put("room", JSONObject().apply {
                 put("size", room.size.toDouble())
